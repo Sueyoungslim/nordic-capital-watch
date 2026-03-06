@@ -24,7 +24,7 @@ FEEDS = [
     {"url": "https://www.breakit.se/feed/artiklar",  "country": "SE", "source": "Breakit",         "weight": 3},
     {"url": "https://www.di.se/digital/rss",         "country": "SE", "source": "DI Digital",      "weight": 3},
     {"url": "https://www.di.se/rss",                 "country": "SE", "source": "Dagens Industri", "weight": 3},
-    {"url": "https://computersweden.se/feed/",       "country": "SE", "source": "Computer Sweden", "weight": 2},
+    {"url": "https://computersweden.se/feed/",       "country": "SE", "source": "Computer Sweden", "weight": 2, "strict": True},
     {"url": "https://mfn.se/all/rss",                "country": "SE", "source": "MFN",             "weight": 2},
     {"url": "https://www.realtid.se/feed/",          "country": "SE", "source": "Realtid",         "weight": 2},
     # Norge
@@ -83,8 +83,12 @@ def is_recent(entry, cutoff: datetime) -> bool:
     return dt is not None and dt >= cutoff
 
 
-def score_entry(entry, source_weight: int) -> tuple[int, bool]:
-    """Returnera (relevanspoäng, är_prioritet). Högre poäng = viktigare."""
+def score_entry(entry, source_weight: int, strict: bool = False) -> tuple[int, bool]:
+    """Returnera (relevanspoäng, är_prioritet). Högre poäng = viktigare.
+
+    strict=True: artikeln måste träffa minst ett BOOST- eller PRIORITY-nyckelord
+    (används för breda tekniksajter som annars matchar allt).
+    """
     text = " ".join([
         getattr(entry, "title", ""),
         getattr(entry, "summary", ""),
@@ -94,13 +98,17 @@ def score_entry(entry, source_weight: int) -> tuple[int, bool]:
     if not any(kw in text for kw in KEYWORDS):
         return 0, False
 
+    is_priority = any(kw in text for kw in PRIORITY_KEYWORDS)
+    hits_boost   = any(kw in text for kw in BOOST_KEYWORDS)
+
+    if strict and not is_priority:
+        return 0, False
+
     score = source_weight
     score += sum(1 for kw in KEYWORDS if kw in text)
     score += sum(2 for kw in BOOST_KEYWORDS if kw in text)
-
-    is_priority = any(kw in text for kw in PRIORITY_KEYWORDS)
     if is_priority:
-        score += 15  # Kraftig boost för pre-seed / Serie A
+        score += 15
 
     return score, is_priority
 
@@ -132,7 +140,7 @@ def fetch_feed(feed_cfg: dict, cutoff: datetime) -> list[dict]:
     for entry in parsed.entries:
         if not is_recent(entry, cutoff):
             continue
-        s, priority = score_entry(entry, feed_cfg["weight"])
+        s, priority = score_entry(entry, feed_cfg["weight"], strict=feed_cfg.get("strict", False))
         if s == 0:
             continue
         results.append({
