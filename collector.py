@@ -22,6 +22,9 @@ MAX_ARTICLES = 15   # Antal artiklar att skicka till Slack
 FEEDS = [
     # Sverige
     {"url": "https://www.breakit.se/feed/artiklar",  "country": "SE", "source": "Breakit",         "weight": 3},
+    {"url": "https://www.di.se/digital/rss",         "country": "SE", "source": "DI Digital",      "weight": 3},
+    {"url": "https://www.di.se/rss",                 "country": "SE", "source": "Dagens Industri", "weight": 3},
+    {"url": "https://computersweden.se/feed/",       "country": "SE", "source": "Computer Sweden", "weight": 2},
     {"url": "https://mfn.se/all/rss",                "country": "SE", "source": "MFN",             "weight": 2},
     {"url": "https://www.realtid.se/feed/",          "country": "SE", "source": "Realtid",         "weight": 2},
     # Norge
