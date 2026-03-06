@@ -53,6 +53,15 @@ BOOST_KEYWORDS = [
     "kapitalrunda", "börsnotering", "ipo", "emisjon", "kapitalrunde",
 ]
 
+# Nyckelord för tidiga rundor — dessa prioriteras högst (skalning & tillväxt)
+PRIORITY_KEYWORDS = [
+    "pre-seed", "preseed", "pre seed",
+    "seed round", "seed-runda", "såddfinansiering", "såddkapital",
+    "serie a", "series a", "serie-a",
+    "kapitalrunda", "kapitalrunde",
+    "första runda", "tidigt skede", "early stage",
+]
+
 # ── Hjälpfunktioner ──────────────────────────────────────────────────────────
 
 def parse_date(entry) -> datetime | None:
@@ -71,8 +80,8 @@ def is_recent(entry, cutoff: datetime) -> bool:
     return dt is not None and dt >= cutoff
 
 
-def score_entry(entry, source_weight: int) -> int:
-    """Returnera relevanspoäng. Högre = viktigare."""
+def score_entry(entry, source_weight: int) -> tuple[int, bool]:
+    """Returnera (relevanspoäng, är_prioritet). Högre poäng = viktigare."""
     text = " ".join([
         getattr(entry, "title", ""),
         getattr(entry, "summary", ""),
@@ -80,15 +89,20 @@ def score_entry(entry, source_weight: int) -> int:
     ]).lower()
 
     if not any(kw in text for kw in KEYWORDS):
-        return 0
+        return 0, False
 
     score = source_weight
     score += sum(1 for kw in KEYWORDS if kw in text)
     score += sum(2 for kw in BOOST_KEYWORDS if kw in text)
-    return score
+
+    is_priority = any(kw in text for kw in PRIORITY_KEYWORDS)
+    if is_priority:
+        score += 15  # Kraftig boost för pre-seed / Serie A
+
+    return score, is_priority
 
 
-def excerpt(entry, max_chars: int = 120) -> str:
+def excerpt(entry, max_chars: int = 500) -> str:
     """Kort sammanfattning från RSS-posten."""
     raw = getattr(entry, "summary", "") or getattr(entry, "description", "")
     # Rensa enkla HTML-taggar
@@ -115,17 +129,18 @@ def fetch_feed(feed_cfg: dict, cutoff: datetime) -> list[dict]:
     for entry in parsed.entries:
         if not is_recent(entry, cutoff):
             continue
-        s = score_entry(entry, feed_cfg["weight"])
+        s, priority = score_entry(entry, feed_cfg["weight"])
         if s == 0:
             continue
         results.append({
-            "title":   getattr(entry, "title", "(ingen rubrik)").strip(),
-            "link":    getattr(entry, "link", ""),
-            "excerpt": excerpt(entry),
-            "date":    parse_date(entry),
-            "source":  feed_cfg["source"],
-            "country": feed_cfg["country"],
-            "score":   s,
+            "title":    getattr(entry, "title", "(ingen rubrik)").strip(),
+            "link":     getattr(entry, "link", ""),
+            "excerpt":  excerpt(entry),
+            "date":     parse_date(entry),
+            "source":   feed_cfg["source"],
+            "country":  feed_cfg["country"],
+            "score":    s,
+            "priority": priority,
         })
 
     print(f"  {feed_cfg['source']}: {len(parsed.entries)} inlägg → {len(results)} matchade")
@@ -158,27 +173,26 @@ def build_slack_message(articles: list[dict]) -> dict:
     se = [a for a in articles if a["country"] == "SE"]
     no = [a for a in articles if a["country"] == "NO"]
 
-    def render_section(flag: str, label: str, items: list[dict]) -> dict:
-        if not items:
-            return {
-                "type": "section",
-                "text": {"type": "mrkdwn",
-                         "text": f"*{flag} {label}*\n_Inga matchande nyheter denna period_"}
-            }
-        lines = []
-        for a in items:
-            link_text = f"<{a['link']}|{a['title']}>" if a["link"] else a["title"]
-            line = f"• {link_text}  _via {a['source']}_"
-            if a["excerpt"]:
-                line += f"\n  _{a['excerpt']}_"
-            lines.append(line)
-        return {
+    def render_articles(flag: str, label: str, items: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        out.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f"*{flag} {label} ({len(items)})*\n" + "\n".join(lines)}
-        }
+                     "text": f"*{flag} {label} ({len(items)})*" if items
+                             else f"*{flag} {label}*\n_Inga matchande nyheter denna period_"}
+        })
+        for a in items:
+            badge = "🚀 *PRIORITET* — " if a["priority"] else ""
+            link_text = f"<{a['link']}|{a['title']}>" if a["link"] else a["title"]
+            header_line = f"{badge}*{link_text}*\n_via {a['source']}_"
+            body = f"\n{a['excerpt']}" if a["excerpt"] else ""
+            out.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": header_line + body}
+            })
+        return out
 
-    blocks = [
+    blocks: list[dict] = [
         {
             "type": "header",
             "text": {"type": "plain_text",
@@ -187,12 +201,13 @@ def build_slack_message(articles: list[dict]) -> dict:
         {
             "type": "context",
             "elements": [{"type": "mrkdwn",
-                           "text": f"_De {len(articles)} viktigaste technyheterna från Sverige & Norge de senaste {LOOKBACK_DAYS} dagarna_"}]
+                           "text": f"_De {len(articles)} viktigaste technyheterna från Sverige & Norge "
+                                   f"de senaste {LOOKBACK_DAYS} dagarna • 🚀 = pre-seed / Serie A_"}]
         },
         {"type": "divider"},
-        render_section("🇸🇪", "Sverige", se),
+        *render_articles("🇸🇪", "Sverige", se),
         {"type": "divider"},
-        render_section("🇳🇴", "Norge", no),
+        *render_articles("🇳🇴", "Norge", no),
         {"type": "divider"},
         {
             "type": "context",
@@ -238,8 +253,8 @@ def main():
     n_se = min(len(se_all), MAX_ARTICLES - n_no)  # fyll upp om NO är litet
 
     selected = se_all[:n_se] + no_all[:n_no]
-    # Sortera slutlistan: SE först, sedan NO; inom varje grupp högst poäng
-    selected.sort(key=lambda a: (a["country"], -a["score"]))
+    # Sortera: SE först, sedan NO; inom varje grupp prioritet > poäng
+    selected.sort(key=lambda a: (a["country"], not a["priority"], -a["score"]))
 
     print(f"\nVäljer {len(selected)} artiklar (SE: {n_se}, NO: {n_no})")
 
